@@ -15,15 +15,27 @@ def read_json(filename):
     with open(filename) as f:
         return json.loads(f.read())
 
-		
+        
 def file_len(fname):
     with open(fname) as f:
         i = 0
         for i, l in enumerate(f, 1):
             pass
     return i
+    
 
-	
+def try_except(cmd, args, kwargs, errors, tries=5, timeout=1):
+    for _ in range(tries):
+        try:
+            return cmd(*args, **kwargs)
+        except errors as e:
+            print("Error:", e)
+            time.sleep(timeout)
+    
+    print("Giving up...")
+    return None
+
+    
 # # Authentication
 def get_bearer_token(consumer_key, consumer_secret):
     # Not sure why this needs all the encoding.
@@ -59,7 +71,16 @@ def search_tweets(query, count, result_type="recent", filter_retweets=True, filt
         "tweet_mode": "extended",
     }
 
-    js = requests.get(search_url, headers=search_headers, params=search_params).json()["statuses"]
+
+    
+    # Try to get data 5 times before giving up
+    js = try_except(requests.get, [search_url], dict(headers=search_headers, params=search_params), (requests.exceptions.SSLError, requests.exceptions.ConnectionError))
+    if js:
+        js = js.json()["statuses"]
+    else:
+        return pd.DataFrame(columns=["date", "id", "lang", "retweets", "favorites", "text", "user", "url"])
+    
+    
     tweets = pd.DataFrame(js, columns=["created_at", "id", "lang", "retweet_count", "favorite_count"])
     tweets["text"] = [t["retweeted_status"]["full_text"] if "retweeted_status" in t else t["full_text"] for t in js]
     tweets["user"] = [t["user"]["screen_name"] for t in js]
@@ -90,15 +111,16 @@ def sleep_until(dt):
     now = datetime.datetime.today()
     sleep_sec = (dt - now).total_seconds()
     
-    print("Sleeping for", round(sleep_sec), "seconds...")
-    time.sleep(sleep_sec)
-    print("Done.")
+    if sleep_sec > 0:
+        print("Sleeping for", round(sleep_sec), "seconds...")
+        time.sleep(sleep_sec)
+        print("Done.")
     
-	
+    
 def sleep_for(time_delta):
     sleep_until(datetime.datetime.today() + time_delta)
 
-	
+    
 def export_tweets(df, filename):
     with open(filename, 'a') as f:
         df[export_columns].sort_values("date").to_csv(f, header=False, index=False)
@@ -131,49 +153,49 @@ def read_last_tweet(filename):
     
     return pd.concat([headers_df, lines_df])
     
-	
+    
 def harvest_tweets(topic, tweets_filename, seconds_between_calls):
-	tweets_per_call = 100
+    tweets_per_call = 100
 
 
-	tweets_df = read_last_tweet(tweets_filename)
-	if tweets_df is None or len(tweets_df) < 1:
-		last_id = 0
-	else:
-		last_id = tweets_df.loc[0, "id"]
+    tweets_df = read_last_tweet(tweets_filename)
+    if tweets_df is None or len(tweets_df) < 1:
+        last_id = 0
+    else:
+        last_id = tweets_df.loc[0, "id"]
 
 
-	last_checked = None
+    last_checked = None
 
-	while True:
-		now = datetime.datetime.today()
-		
-		# get new tweets
-		tmp_tweets = search_tweets(topic, tweets_per_call)
-		new_tweets = tmp_tweets[tmp_tweets["id"] > last_id]
-		print("Found {} new tweets.".format(len(new_tweets)))
-		
-		# Skip if no new tweets found
-		if len(new_tweets) == 0:
-			sleep_until(now + tdelta(seconds=seconds_between_calls))
-			continue
-			
-		
-		# Sentiment
-		new_tweets[['sent_neg', 'sent_neu', 'sent_pos', 'sent_comp']] = new_tweets["text"].apply(get_sentiment)
-		
-		
-		# Save tweets
-		export_tweets(new_tweets, tweets_filename)
+    while True:
+        now = datetime.datetime.today()
+        
+        # get new tweets
+        tmp_tweets = search_tweets(topic, tweets_per_call)
+        new_tweets = tmp_tweets[tmp_tweets["id"] > last_id]
+        print("Found {} new tweets.".format(len(new_tweets)))
+        
+        # Skip if no new tweets found
+        if len(new_tweets) == 0:
+            sleep_until(now + tdelta(seconds=seconds_between_calls))
+            continue
+            
+        
+        # Sentiment
+        new_tweets[['sent_neg', 'sent_neu', 'sent_pos', 'sent_comp']] = new_tweets["text"].apply(get_sentiment)
+        
+        
+        # Save tweets
+        export_tweets(new_tweets, tweets_filename)
 
-		
-		print(new_tweets[["date", "id", "sent_comp"]])
-		
-		
-		last_checked = now
-		last_id = new_tweets["id"].max()
-		sleep_until(now + tdelta(seconds=seconds_between_calls))
-		
+        
+        print(new_tweets[["date", "id", "sent_comp"]])
+        
+        
+        last_checked = now
+        last_id = new_tweets["id"].max()
+        sleep_until(now + tdelta(seconds=seconds_between_calls))
+        
 
 cred_filename = "./twitter_credentials.json"
 credentials = read_json(cred_filename)
@@ -183,10 +205,10 @@ access_token = get_bearer_token(credentials["CONSUMER_KEY"], credentials["CONSUM
 
 sia = SentimentIntensityAnalyzer()
 export_columns = ["date", "id", "sent_neg", "sent_neu", "sent_pos", "sent_comp", "retweets", "favorites"]
-		
+        
 
 if __name__ == "__main__":
-	harvest_tweets("@Google", "../Datasets/tweets_google_nums.csv", 30)
+    harvest_tweets("@Google", "../Datasets/tweets_google_nums.csv", 30)
 
 
 

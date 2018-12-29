@@ -27,13 +27,28 @@ def read_json(filename):
 
 # # Extract article content from links
 def get_content(url):
-    resp = requests.get(url)
+    resp = try_except(requests.get, [url], [], [requests.exceptions.ConnectionError])
+    if not resp:
+        return ""
+    
+    
     soup = BeautifulSoup(resp.text, "lxml")
     paragraphs = soup.findAll("p")
     clean_paras = [p.get_text().strip() for p in paragraphs if p.get_text().strip()]
     content = "\n".join(clean_paras)
     
     return content.strip()
+
+def try_except(cmd, args, kwargs, errors, tries=5, timeout=1):
+    for _ in range(tries):
+        try:
+            return cmd(*args, **kwargs)
+        except errors as e:
+            print("Error:", e)
+            time.sleep(timeout)
+    
+    print("Giving up...")
+    return None
 
 
 # # Sentiment Analysis
@@ -72,7 +87,7 @@ def get_topic_freq(text, topic):
     
     return pd.Series({"topic_freq": topic_freq, "topic_density": topic_density})
 
-	
+    
 def search_articles(query, count, sort_by="publishedAt", from_timestamp=None):
     search_params = {
         'q': query,
@@ -84,7 +99,13 @@ def search_articles(query, count, sort_by="publishedAt", from_timestamp=None):
         "apiKey": newsapi_key,
     }
 
-    js = requests.get(search_url, params=search_params).json()
+    # Try to get data 5 times before giving up
+    js = try_except(requests.get, [newsapi_search_url], dict(params=search_params),
+                    (requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError))
+    if js:
+        js = js.json()
+    else:
+        return pd.DataFrame(columns=["date", "id", "title", "author", "source", "url"])
     
     
     articles = []
@@ -106,8 +127,8 @@ def search_articles(query, count, sort_by="publishedAt", from_timestamp=None):
 
 
     return articles_df
-	
-	
+    
+    
 def sleep_until(dt):
     now = datetime.datetime.today()
     sleep_sec = (dt - now).total_seconds()
@@ -117,11 +138,11 @@ def sleep_until(dt):
         time.sleep(sleep_sec)
         print("Done.")
     
-	
+    
 def sleep_for(time_delta):
     sleep_until(datetime.datetime.today() + time_delta)
 
-	
+    
 def export_articles(df, filename):
     with open(filename, 'a') as f:
         df[export_columns].sort_values("date").to_csv(f, header=False, index=False)
@@ -154,7 +175,7 @@ def read_last_article(filename):
     
     return pd.concat([headers_df, lines_df])
     
-	
+    
 def file_len(fname):
     with open(fname) as f:
         i = 0
@@ -162,55 +183,55 @@ def file_len(fname):
             pass
     return i
 
-	
+    
 def harvest_articles(topic, articles_filename, seconds_between_calls):
-	articles_per_call = 100
-	
-	
-	articles_df = read_last_article(articles_filename)
-	if articles_df is None or len(articles_df) < 1:
-		last_checked = datetime.datetime.today() - tdelta(weeks=1)
-	else:
-		last_checked = articles_df.loc[0, "date"]
+    articles_per_call = 100
+    
+    
+    articles_df = read_last_article(articles_filename)
+    if articles_df is None or len(articles_df) < 1:
+        last_checked = datetime.datetime.today() - tdelta(weeks=1)
+    else:
+        last_checked = articles_df.loc[0, "date"]
 
 
-	while True:
-		now = datetime.datetime.today()
-		
-		# get new articles
-		tmp_articles = search_articles(topic, articles_per_call)
-		new_articles = tmp_articles[tmp_articles["date"] > last_checked]
-		print("Found {} new articles.".format(len(new_articles)))
-		
-		# Skip if no new articles found
-		if len(new_articles) == 0:
-			sleep_until(now + tdelta(seconds=seconds_between_calls))
-			continue
-			
-		
-		# Sentiment
-		new_articles["content"] = new_articles["url"].apply(get_content)
-		new_articles[['sent_neg', 'sent_neu', 'sent_pos', 'sent_comp']] = new_articles["content"].apply(get_sentiment)
-		new_articles[["topic_freq", "topic_density"]] = new_articles["content"].apply(get_topic_freq, args=(topic,))
-		
-		
-		# Save articles
-		export_articles(new_articles, articles_filename)
-				
-		
-		print(new_articles[["date", "id", "sent_comp"]])
-		
-		
-		last_checked = now
-		sleep_until(now + tdelta(seconds=seconds_between_calls))
-	
-	
+    while True:
+        now = datetime.datetime.today()
+        
+        # get new articles
+        tmp_articles = search_articles(topic, articles_per_call)
+        new_articles = tmp_articles[tmp_articles["date"] > last_checked]
+        print("Found {} new articles.".format(len(new_articles)))
+        
+        # Skip if no new articles found
+        if len(new_articles) == 0:
+            sleep_until(now + tdelta(seconds=seconds_between_calls))
+            continue
+            
+        
+        # Sentiment
+        new_articles["content"] = new_articles["url"].apply(get_content)
+        new_articles[['sent_neg', 'sent_neu', 'sent_pos', 'sent_comp']] = new_articles["content"].apply(get_sentiment)
+        new_articles[["topic_freq", "topic_density"]] = new_articles["content"].apply(get_topic_freq, args=(topic,))
+        
+        
+        # Save articles
+        export_articles(new_articles, articles_filename)
+                
+        
+        print(new_articles[["date", "id", "sent_comp"]])
+        
+        
+        last_checked = now
+        sleep_until(now + tdelta(seconds=seconds_between_calls))
+    
+    
 # Internal
 to_filter = set(punctuation) | set(stopwords.words("english"))
 pstem = PorterStemmer()
 sia = SentimentIntensityAnalyzer()
 export_columns = ["date", "id", "sent_neg", "sent_neu", "sent_pos", "sent_comp", "topic_freq", "topic_density"]
-	
+    
 # NewsAPI Credentials
 cred_filename = "newsapi_credentials.json"
 newsapi_key = read_json(cred_filename)["newsapi_key"]
@@ -218,6 +239,6 @@ search_url = "https://newsapi.org/v2/everything"
 
 
 if __name__ == "__main__":
-	harvest_articles("Google", "../Datasets/articles_google_nums.csv", 30)
+    harvest_articles("Google", "../Datasets/articles_google_nums.csv", 100)
 
 
